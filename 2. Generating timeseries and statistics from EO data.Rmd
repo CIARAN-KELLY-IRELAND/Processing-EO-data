@@ -1,0 +1,391 @@
+---
+title: 'Generating timeseries and statistics from EO data'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+## Introduction
+
+This example will utilise a file from EUMETSAT CM SAF. We will work with a NetCDF file of monthly Direct Normalized Irradiance over Germany for the 30 year period 1983 to 2012 from the Climate Data Record SARAH 2.1. This data file should be provided along with this script and is called `DNI_1983-01-01-2012-12-01.nc`. Put this data file in the same folder as this script is in.
+
+For further information about downloading data from EUMETSAT CM SAF you can check the webpage https://wui.cmsaf.eu/ where you can browse the product catalog. There is also an online short course about this data record offered by EUMETSAT which includes tutorials on accessing data https://training.eumetsat.int/course/view.php?id=378.
+
+This tutorial will show you how to generate a time series plot for both an area and a point location as well as show how to generate basic statistics from your file.
+
+## Getting set up
+
+We begin by importing the libraries we need for working with the data. If the packages are already installed, you can load them with the `library()` function. If this gives an error, you need to install them first using `install.packages()`.
+
+It's good practice to load the packages used in your script in one place near the top of the file. This makes it easier for someone else you might share the file with to quickly see which packages they need to run your file.
+
+```{r load_packages}
+# If you have not previously installed these packages, do this first by running the line below without the # sign. 
+# You only need to do this once.
+# install.packages(c("ncdf4", "ncdf4.helpers", "cmsaf", "lubridate", "ggplot2"))
+
+# 'ncdf4', 'ncdf4.helpers' are for working with NetCDF files
+# 'cmsaf' has the CM SAF R Toolbox and will also load `cmsafops`, which has helpful functions for working with CM SAF data.
+# 'ggplot2' for graphics
+# 'lubridate' for working with dates
+library(ncdf4)
+library(ncdf4.helpers)
+library(cmsaf)
+library(lubridate)
+library(ggplot2)
+```
+
+It's often useful to set the working directory in R. This is just the default directory that R will use for reading and writing files. Files directly in your working directory can be referred to just with their name (or relative path). You can still access files outside your working directory by using the full path.
+
+If you keep your scripts and data files in the same folder, you do not need to provide the full paths. However, you may want to store things in different places and so it is good practice to be specific.
+
+Change the path within `setwd()` below to the folder that this file is in. Remember in R you must always use `/` as the path separator.
+
+You can confirm that you set this correctly by running `getwd()` which should return the directory you set.
+
+```{r set_wd}
+# Change the path below to the folder this file is in.
+setwd("C:/E0")
+# Confirm the working directory was set correctly.
+getwd()
+```
+
+Now confirm that the data file `DNI_1983-01-01-2012-12-01.nc` exists. If you placed the file within the same folder as this script file, you will not need to change the `data_path` variable below because it is directly in the working directory. If it is somewhere else, you can change `data_path` below with the full file path. If the file exists then `file.exists` will return `TRUE`. If it doesn't, you need to check the file is in the correct place or your path may be incorrect.
+
+```{r check_file}
+data_path <- "DNI_1983-01-01-2012-12-01.nc"
+file.exists(data_path)
+```
+
+If this returns `TRUE` then we're ready to start working with the data!
+
+## Reading a NetCDF file
+
+Connect to the NetCDF file using the `nc_open()` function from the `ncdf4` package. We save the connection to the file as a variable called `nc`.
+
+```{r nc_open}
+nc <- nc_open(data_path)
+```
+
+First, get the list of variable names and dimension names from the file. The variables are in `nc$var` and dimensions in `nc$dim`. We use the `names()` function to get the names from these lists.
+
+```{r print_nc}
+names(nc$var)
+names(nc$dim)
+```
+
+We can also get this information from the `ncinfo()` function from `cmsafops`.
+
+```{r ncinfo}
+ncinfo(nc = nc)
+```
+
+Notice that there are 3 dimensions in this file, and 360 time points, one for each month between 1983 and 2015.
+
+## Reading the metadata from a NetCDF file
+
+NetCDF files are self-describing, and contain useful metadata that gives you important information about your data.
+
+The `ncatt_get()` function gets the attributes, or metadata, from the file. See the help for this function by running `?ncatt_get`. It shows us that we need to specify two arguments, `nc` (the `nc` object) and `varid` (the variable we want the metadata for).
+
+```{r}
+ncatt_get(nc, "DNI")
+```
+
+The gives us useful metadata for "DNI" such as the units of the values, the missing value code, the standard name (if defined) and a more descriptive long name. We also see that this file was generated using `box_mergetime`.
+
+Notice this line from the help file:
+
+> As a special case, if varid==0, then a global (file) attribute will be read rather than a particular variable's attribute.
+
+Let's try that to get the global metadata too.
+
+```{r}
+ncatt_get(nc, 0)
+```
+
+Here we get lots of information about the dataset, its source and publisher, geographic and instrument details.
+
+## Basic Statistics
+
+Let's do some calculations.
+
+First, extract the "DNI" variable as an array using `ncvar_get()` from `ncdf4`. The `dim` functions tell us the dimensions of the array.
+
+```{r}
+dni_array <- ncvar_get(nc, "DNI")
+dim(dni_array)
+```
+
+The `summary()` function quickly gives us six useful summaries of all the data.
+
+```{r}
+summary(dni_array)
+```
+
+This gives us all the summary numbers of a boxplot - and the mean. Notice that it doesn't mention missing values (NAs) which means there are no missing values in the data.
+
+To look at the distribution of values, we can plot a histogram.
+
+```{r}
+hist(dni_array, main = "Monthly DNI over Germany: 1983 - 2012", 
+     xlab = "DNI (W m-2)")
+```
+
+
+
+## The time variables
+
+Let's have a look at the time variable using `ncvar_get`.
+
+```{r}
+nc_time_var <- ncvar_get(nc, "time")
+nc_time_var
+```
+
+These are numeric values. NetCDF files usually stores dates and times as numbers, but for us it would be more useful to have these as dates. A simple way to do this is to use the `nc.get.time.series()` function from `ncdf4.helpers`.
+
+```{r}
+date_time_var <- ncdf4.helpers::nc.get.time.series(nc, "DNI", "time")
+# print the top and bottom values
+head(date_time_var)
+tail(date_time_var)
+```
+
+This function relies on the file having sensible metadata. If this doesn't work, we can also do it manually ourselves.
+
+First, get the metadata to find out how to interpret the numeric time values.
+
+```{r}
+ncatt_get(nc, "time")
+```
+
+Note that the units are "days since 1983-01-01 00:00:00".
+
+We could use `get_time` from `cmsafops` to convert to a date-time object using this information.
+
+```{r}
+units <- ncatt_get(nc, "time")$units
+date_time_var <- cmsafops::get_time(units, nc_time_var)
+head(date_time_var)
+tail(date_time_var)
+```
+
+We could also convert to a date using `as.Date()` and specifying the origin. However, this only gives the date part, and ignores the time component. So this wouldn't be appropriate for hourly data, for example, but is ok for our monthly data here.
+
+```{r}
+date_time_var <- as.Date(nc_time_var, origin = as.Date("1983/01/01"))
+head(date_time_var)
+tail(date_time_var)
+```
+
+You can check that these give the same result by printing out the result.
+
+## Summarising over dimensions
+
+Let's begin by calculating the mean DNI over Germany for each month. This involves summarising our data by getting the mean of all the grid points each month. This is sometimes called a "field mean".
+
+We'll show two methods of doing this.
+
+#### Method 1: The "R" way
+
+If you have experience with other programming languages you might have thought that this kind of calculation sounds like it could be done by using a "for loop", because we are looping over each time step and doing a calculation. And you are right! And that's method 2. But in R, many functions are set up to already work with arrays and vectors, so you can often avoid using a for loop. There's no problem with for loops, and if you are comfortable with them you should use them, but here we show another method using the very powerful `apply()` function.
+
+```{r}
+field_means <- apply(dni_array, 3, mean)
+field_means
+```
+
+`apply()` essentially does the looping for you. Let's breakdown the arguments:
+
+Have a look at the help with `?apply` to see the possible argumens.
+
+`dni_array` is the array we are calculating on.
+
+`3` is the "MARGIN" argument. This is the dimension we are looping over. Since time is the third dimension of our array we set MARGIN to 3.
+
+`mean` is the "FUN" argument. This is the function we are `apply()`ing to each part of the data.
+
+This is a very concise method, but you need to understand the `apply()` function well to make sure you get the result you want.
+
+#### Method 2: The "for loop" way
+
+If you're more comfortable with the idea of a for loop, then here is an equivalent method.
+
+```{r}
+# Initialise a numeric vector with the same length as the time variable
+field_means <- vector("numeric", length(nc_time_var))
+# Loop over each time point
+for (i in seq_along(nc_time_var)) {
+  # Calculate the mean over all lon and lat points for each time point, i
+  field_means[i] <- mean(dni_array[ , , i], na.rm = TRUE)
+}
+```
+
+Let's break down the different parts of the code above to make sure we understand what's going on:
+
+First we initialise a numeric vector with the length we want, which is the length of the time variable. This just creates a vector of length 360 with default values of 0. It's good practice to create the vector with the right length up front if we know it.
+
+```{r}
+vector("numeric", length(nc_time_var))
+```
+
+`for` is for doing a loop i.e. repeating the same code a fixed number of times with a different counter variable each time.
+
+`seq_along(nc_time_var)` just gives us a list from 1 to 360 to use as the counter in the `for` loop.
+
+```{r}
+seq_along(nc_time_var)
+```
+
+Finally, `field_means[i]` refers to the i'th value of our `field_means` vector.
+
+And `dni_array[ , , i]` extracts all the values for time point i. We can specify three entries inside the `[ ]` because `dni_array` is a 3-dimensional array. The first two values are blank, which means take all the values for that dimension. So we get all the values over the `lon` and `lat` dimensions (the first two dimensions) and just the values for the i'th time step. So we have taken a 2-dimensional slice from the array, which we then calculate the `mean` of.
+
+```{r}
+# e.g. this extracts a 2-dimensional slice
+first_time_point <- dni_array[ , , 1]
+dim(first_time_point)
+```
+
+Whichever method you used, now let's plot the results. Remember we now have a one-dimensional array (vector) of the means for each month, and we have the time points. So we can plot these as a line plot.
+
+```{r}
+plot(date_time_var, field_means, type = "l", 
+     main = "Mean Monthly DNI over Germany 1983 - 2012",
+     xlab = "Date",
+     ylab = "DNI (W m-2)")
+abline(h = mean(field_means), col = "blue")
+```
+
+If we want to do the plot just for the first year, then we simply extract just the first 12 values from our vectors. Note that we use `type = "b"` to get both points and lines.
+
+```{r}
+plot(date_time_var[1:12], field_means[1:12], type = "b", 
+     main = "Mean Monthly DNI over Germany in 1983",
+     xlab = "Month",
+     ylab = "DNI (W m-2)")
+```
+
+## Extracting a single point
+
+We could do the same kind of plot for a single point within Germany.
+
+We know that the extraction will be in the form `dni_array[ , , ]`.
+
+To extract a single point for the whole time series, we need a single number for the first and second (lon and lat) index and a blank value for the time index (so that we get all time points). So something of the form `dni_array[x1, y1, ]`.
+
+Let's extract the DNI at Frankfurt, which has longitude 8.68 and latitude 50.11.
+
+You might be tempted to try `dni_array[8.68, 50.11, ]`, however this won't give us what we want. This will instead extract the data at the 8th longitude value and 50th latitude value. Remember, we have to provide an index within `[ ]`, not a value.
+
+So first, we need to get the lon and lat arrays, and then work out which position in these array our location is.
+
+We define the point we want to extract, then get the lon and lat arrays from the `nc` object. Before going further, we check that the points we want to extract are within the bounds of our grid. If these both return `TRUE` our point is within the bounds.
+
+```{r}
+point_lon <- 8.68
+point_lat <- 50.11
+lon_vals <- ncvar_get(nc, "lon")
+lat_vals <- ncvar_get(nc, "lat")
+
+print("Longitude range check:")
+point_lon >= min(lon_vals) && point_lon <= max(lon_vals)
+print("Latitude range check:")
+point_lat >= min(lat_vals) && point_lat <= max(lat_vals)
+```
+
+Now we find the index of the lon and lat points which are closest to our point.
+
+```{r}
+lon_index <- which.min(abs(lon_vals - point_lon))
+lat_index <- which.min(abs(lat_vals - point_lat))
+
+lon_index
+lat_index
+
+print("Closest grid point:")
+lon_vals[lon_index]
+lat_vals[lat_index]
+
+```
+
+First we calculated the absolute value of the difference between all the lon/lat points and our point: `abs(lon_vals - point_lon)`. The minimum of these gives us the closest point to our point. `which.min` gives us the *index* of that minimum, since we need the index for the extraction. You can print these values out by using the calculated index values to check it gives a point close to our point.
+
+Now we have the index values we need to extract from `dni_array`.
+
+```{r}
+point_dni <- dni_array[lon_index, lat_index, ]
+```
+
+And we can plot it in a similar way.
+
+```{r}
+plot(date_time_var, point_dni, type = "l", main = "DNI at Frankfurt 1983 - 2012")
+```
+
+## Extracting an area
+
+Using similar ideas as above, we could also extract a smaller region from our data, which we could then do further calculations on.
+
+```{r}
+range_lon <- c(7, 8)
+range_lat <- c(50, 50.5)
+
+print("Longitude range check:")
+range_lon[1] <= range_lon[2] && range_lon[1] >= min(lon_vals) && range_lon[2] <= max(lon_vals)
+print("Latitude range check:")
+range_lat[1] <= range_lat[2] && range_lat[1] >= min(lat_vals) && range_lat[2] <= max(lat_vals)
+
+lon_min_index = which.min(abs(lon_vals - range_lon[1]))
+lon_max_index = which.min(abs(lon_vals - range_lon[2]))
+
+lat_min_index = which.min(abs(lat_vals - range_lat[1]))
+lat_max_index = which.min(abs(lat_vals - range_lat[2]))
+```
+
+We created the extraction ranges as vectors with 2 values, a min and a max. The `c()` function is for creating vectors: `range_lon <- c(7, 8)`
+
+Again, we check the values are within the range of the data.
+
+Then we calculate the four index values we need using `which.min()` again. This now gives us a range of index values we can use for extraction.
+
+```{r}
+dni_region <- dni_array[lon_min_index:lon_max_index, lat_min_index:lat_max_index, ]
+dim(dni_region)
+```
+
+We use the format `a:b` to specify a range of indices to extract. Then we check the dimensions of our extraction and we see we now have 21 lon points, 11 lat points and all 360 time points.
+
+Now try to calculate the mean DNI over this region using either of the methods shown before.
+
+## More time series analysis
+
+There's lots more time series analysis and graphs that can be produced from this data. If you're doing more time series work, either for a single point or from summarising over a region (e.g. field mean) then a natural structure to be work with this data is a data frame i.e. tabular data with a number of columns of the same length, like you might use in a spreadsheet and for in-situ data.
+
+Data frames are also the data format that the "tidyverse" set of packages use for everything from data manipulation, graphics and modelling. These are a very powerful, coherent set of R packages which is well worth learning if you're planning to continue learning R. The "tidyverse" includes the `ggplot2` R package, which is becoming the standard graphics package in R and has an incredibly powerful and flexible plotting system.
+
+The `ggplot2` and "tidyverse" system of packages takes a bit of learning, and is beyond the scope of this short course, but here is an example below showing what's possible by using data frames and `ggplot2`.
+
+```{r}
+# Create a data frame with 2 columns for date and DNI
+field_df <- data.frame(date = date_time_var, dni = field_means)
+# Create month and year columns from the date
+field_df$month <- month(field_df$date, label = TRUE)
+field_df$year <- year(field_df$date)
+```
+
+```{r}
+# Boxplots of DNI for each month
+ggplot(field_df, aes(x = month, y = dni)) +
+  geom_boxplot()
+```
+
+```{r}
+# Line plot of DNI with trend line including standard error
+ggplot(field_df, aes(x = date, y = dni)) +
+  geom_line() +
+  geom_smooth(method = "lm")
+```
